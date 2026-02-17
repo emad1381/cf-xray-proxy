@@ -391,7 +391,10 @@ function isHealthEndpoint(request: Request, pathname: string, env: Env): boolean
     return false;
   }
 
-  const healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+  let healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+  if (!healthPath.startsWith('/')) {
+    healthPath = '/' + healthPath;
+  }
   return pathname === healthPath;
 }
 

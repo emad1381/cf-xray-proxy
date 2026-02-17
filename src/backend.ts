@@ -458,7 +458,11 @@ export class BackendManager implements BackendManagerShape {
     this.debugEnabled = env.DEBUG === 'true';
     this.backends = this.initializeBackends(env);
     this.healthCheckIntervalMs = resolveHealthCheckIntervalMs(env);
-    this.healthCheckPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+    let healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+    if (!healthPath.startsWith('/')) {
+      healthPath = '/' + healthPath;
+    }
+    this.healthCheckPath = healthPath;
     this.stickySession =
       this.backends.length > 1 && parseBoolean(env.BACKEND_STICKY_SESSION, DEFAULT_BACKEND_STICKY_SESSION);
 

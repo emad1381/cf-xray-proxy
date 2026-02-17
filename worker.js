@@ -378,7 +378,11 @@ var BackendManager = class {
     this.debugEnabled = env.DEBUG === "true";
     this.backends = this.initializeBackends(env);
     this.healthCheckIntervalMs = resolveHealthCheckIntervalMs(env);
-    this.healthCheckPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+    let healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+    if (!healthPath.startsWith("/")) {
+      healthPath = "/" + healthPath;
+    }
+    this.healthCheckPath = healthPath;
     this.stickySession = this.backends.length > 1 && parseBoolean(env.BACKEND_STICKY_SESSION, BACKEND_STICKY_SESSION);
     this.rebuildSelectionStructures();
     this.nextHealthCheckAt = Date.now() + this.healthCheckIntervalMs;
@@ -3185,7 +3189,10 @@ function isHealthEndpoint(request, pathname, env) {
   if (request.method.toUpperCase() !== "GET") {
     return false;
   }
-  const healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+  let healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+  if (!healthPath.startsWith("/")) {
+    healthPath = "/" + healthPath;
+  }
   return pathname === healthPath;
 }
 function isStatusEndpoint(request, pathname) {
