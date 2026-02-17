@@ -11,6 +11,7 @@ var RATE_LIMIT_MAX_CONN_PER_MIN = 10;
 var UUID_MAX_CONNECTIONS = 0;
 var DEFAULT_TRANSPORT = "xhttp";
 var HIDE_BACKEND_URLS = "true";
+var DEFAULT_HEALTH_PATH = "/health";
 var SUPPORTED_TRANSPORTS = ["xhttp", "httpupgrade", "ws"];
 
 // src/utils/fetch.ts
@@ -71,7 +72,6 @@ function isAbortError(error) {
 
 // src/backend.ts
 var DEFAULT_BACKEND_WEIGHT = 1;
-var HEALTH_CHECK_PATH = "/health";
 var HEALTH_CHECK_TIMEOUT_MS = 4e3;
 var BACKEND_FAILURE_HEADER_VALUE = "1";
 var FAILURE_HYSTERESIS_COUNT = 1;
@@ -366,6 +366,7 @@ var BackendManager = class {
   backends;
   backendByUrl = /* @__PURE__ */ new Map();
   healthCheckIntervalMs;
+  healthCheckPath;
   stickySession;
   debugEnabled;
   healthyAliasTable = null;
@@ -377,6 +378,7 @@ var BackendManager = class {
     this.debugEnabled = env.DEBUG === "true";
     this.backends = this.initializeBackends(env);
     this.healthCheckIntervalMs = resolveHealthCheckIntervalMs(env);
+    this.healthCheckPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
     this.stickySession = this.backends.length > 1 && parseBoolean(env.BACKEND_STICKY_SESSION, BACKEND_STICKY_SESSION);
     this.rebuildSelectionStructures();
     this.nextHealthCheckAt = Date.now() + this.healthCheckIntervalMs;
@@ -456,7 +458,9 @@ var BackendManager = class {
       url: backend.url.toString(),
       healthy: backend.healthy,
       lastCheckedAt: backend.lastCheck,
-      failureCount: backend.failures
+      failureCount: backend.failures,
+      latency: backend.latency,
+      lastError: backend.lastError
     }));
   }
   initializeBackends(env) {
@@ -480,7 +484,8 @@ var BackendManager = class {
           lastCheck: now,
           failures: 0,
           consecutiveFailures: 0,
-          consecutiveSuccesses: 0
+          consecutiveSuccesses: 0,
+          latency: 0
         };
         this.backendByUrl.set(key, backend);
       } catch {
@@ -501,7 +506,8 @@ var BackendManager = class {
         lastCheck: now,
         failures: 0,
         consecutiveFailures: 0,
-        consecutiveSuccesses: 0
+        consecutiveSuccesses: 0,
+        latency: 0
       });
     }
     const backends = Array.from(this.backendByUrl.values()).sort((first, second) => first.index - second.index);
@@ -521,7 +527,8 @@ var BackendManager = class {
       weight: DEFAULT_BACKEND_WEIGHT,
       healthy: true,
       lastCheck: Date.now(),
-      failures: 0
+      failures: 0,
+      latency: 0
     };
   }
   lookupBackend(url) {
@@ -620,6 +627,9 @@ var BackendManager = class {
     this.nextHealthCheckAt = now + this.healthCheckIntervalMs;
     void this.runHealthChecks();
   }
+  async checkAll() {
+    await this.runHealthChecks();
+  }
   async runHealthChecks() {
     if (this.healthCheckInFlight) {
       return;
@@ -635,12 +645,14 @@ var BackendManager = class {
     }
   }
   async checkBackendHealth(backend) {
-    const checkUrl = new URL(HEALTH_CHECK_PATH, backend.url);
+    const checkUrl = new URL(this.healthCheckPath, backend.url);
     const controller = new AbortController();
     const timeout = setTimeout(() => {
       controller.abort();
     }, HEALTH_CHECK_TIMEOUT_MS);
+    const start = Date.now();
     let isHealthyResult = false;
+    let errorReason;
     try {
       const response = await fetch(checkUrl.toString(), {
         method: "GET",
@@ -652,18 +664,22 @@ var BackendManager = class {
       });
       isHealthyResult = response.status < 500;
       await response.body?.cancel();
-    } catch {
+    } catch (error) {
       isHealthyResult = false;
+      errorReason = error instanceof Error ? error.message : "Unknown network error";
     } finally {
       clearTimeout(timeout);
     }
-    return this.applyHealthProbeResult(backend, isHealthyResult);
+    const latency = Date.now() - start;
+    return this.applyHealthProbeResult(backend, isHealthyResult, latency, errorReason);
   }
-  applyHealthProbeResult(backend, isHealthyResult) {
+  applyHealthProbeResult(backend, isHealthyResult, latency, errorReason) {
     backend.lastCheck = Date.now();
+    backend.latency = latency;
     if (isHealthyResult) {
       backend.consecutiveSuccesses += 1;
       backend.consecutiveFailures = 0;
+      delete backend.lastError;
       if (backend.healthy) {
         backend.failures = 0;
         return false;
@@ -675,7 +691,8 @@ var BackendManager = class {
       backend.failures = 0;
       if (this.debugEnabled) {
         console.info("[backend] health check recovered backend", {
-          backendUrl: backend.url.toString()
+          backendUrl: backend.url.toString(),
+          latency
         });
       }
       return true;
@@ -683,6 +700,9 @@ var BackendManager = class {
     backend.consecutiveFailures += 1;
     backend.consecutiveSuccesses = 0;
     backend.failures += 1;
+    if (errorReason) {
+      backend.lastError = errorReason;
+    }
     if (!backend.healthy || backend.consecutiveFailures < FAILURE_HYSTERESIS_COUNT) {
       return false;
     }
@@ -690,7 +710,8 @@ var BackendManager = class {
     if (this.debugEnabled) {
       console.warn("[backend] health check marked backend unhealthy", {
         backendUrl: backend.url.toString(),
-        failures: backend.failures
+        failures: backend.failures,
+        reason: errorReason
       });
     }
     return true;
@@ -3160,14 +3181,20 @@ function isLandingPageRequest(request, pathname) {
   const isDocument = (request.headers.get("sec-fetch-dest") ?? "").toLowerCase() === "document";
   return isDocument || accept.includes("text/html");
 }
-function isHealthEndpoint(request, pathname) {
-  return request.method.toUpperCase() === "GET" && pathname === "/health";
+function isHealthEndpoint(request, pathname, env) {
+  if (request.method.toUpperCase() !== "GET") {
+    return false;
+  }
+  const healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+  return pathname === healthPath;
 }
 function isStatusEndpoint(request, pathname) {
   return request.method.toUpperCase() === "GET" && pathname === "/status";
 }
-function buildHealthResponse(env) {
-  const backendStates = getBackendManager(env).getStates();
+async function buildHealthResponse(env) {
+  const manager = getBackendManager(env);
+  await manager.checkAll();
+  const backendStates = manager.getStates();
   const totalBackends = backendStates.length;
   const healthyBackends = backendStates.filter((backend) => backend.healthy).length;
   const status = healthyBackends > 0 ? "ok" : "degraded";
@@ -3304,8 +3331,8 @@ var index_default = {
     const debugEnabled = isDebugEnabled4(env);
     const requestUrl = new URL(request.url);
     const subscriptionConfig = getSubscriptionConfig(env);
-    if (isHealthEndpoint(request, requestUrl.pathname)) {
-      return buildHealthResponse(env);
+    if (isHealthEndpoint(request, requestUrl.pathname, env)) {
+      return await buildHealthResponse(env);
     }
     if (isStatusEndpoint(request, requestUrl.pathname)) {
       if (!debugEnabled) {

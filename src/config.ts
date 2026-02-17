@@ -22,5 +22,6 @@ export const UUID_MAX_CONNECTIONS = 0;
 export const DEFAULT_TRANSPORT: TransportType = 'xhttp';
 export const DEBUG = 'false';
 export const HIDE_BACKEND_URLS = 'true';
+export const DEFAULT_HEALTH_PATH = '/health';
 
 export const SUPPORTED_TRANSPORTS = ['xhttp', 'httpupgrade', 'ws'] as const satisfies readonly TransportType[];

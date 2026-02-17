@@ -18,6 +18,7 @@ export interface Env {
   TRANSPORT?: string;
   DEBUG?: string;
   HIDE_BACKEND_URLS?: string;
+  HEALTH_PATH?: string;
   UUID_MAX_CONNECTIONS?: string;
 }
 

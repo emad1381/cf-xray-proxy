@@ -3,13 +3,13 @@ import {
   BACKEND_LIST as DEFAULT_BACKEND_LIST,
   BACKEND_STICKY_SESSION as DEFAULT_BACKEND_STICKY_SESSION,
   BACKEND_URL as DEFAULT_BACKEND_URL,
+  DEFAULT_HEALTH_PATH,
   MAX_RETRIES,
 } from './config';
 import type { BackendState, Env } from './types';
 import { normalizeRetryCount } from './utils/fetch';
 
 const DEFAULT_BACKEND_WEIGHT = 1;
-const HEALTH_CHECK_PATH = '/health';
 const HEALTH_CHECK_TIMEOUT_MS = 4_000;
 const BACKEND_FAILURE_HEADER_VALUE = '1';
 const FAILURE_HYSTERESIS_COUNT = 1;
@@ -25,6 +25,8 @@ export interface Backend {
   healthy: boolean;
   lastCheck: number;
   failures: number;
+  latency: number;
+  lastError?: string;
 }
 
 export interface BackendManagerShape {
@@ -32,6 +34,7 @@ export interface BackendManagerShape {
   markFailed(url: URL | string): void;
   markHealthy(url: URL | string): void;
   getStates(): BackendState[];
+  checkAll(): Promise<void>;
 }
 
 interface ParsedBackendConfig {
@@ -440,6 +443,7 @@ export class BackendManager implements BackendManagerShape {
   private readonly backends: BackendRuntimeState[];
   private readonly backendByUrl = new Map<string, BackendRuntimeState>();
   private readonly healthCheckIntervalMs: number;
+  private readonly healthCheckPath: string;
   private readonly stickySession: boolean;
   private readonly debugEnabled: boolean;
 
@@ -454,6 +458,7 @@ export class BackendManager implements BackendManagerShape {
     this.debugEnabled = env.DEBUG === 'true';
     this.backends = this.initializeBackends(env);
     this.healthCheckIntervalMs = resolveHealthCheckIntervalMs(env);
+    this.healthCheckPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
     this.stickySession =
       this.backends.length > 1 && parseBoolean(env.BACKEND_STICKY_SESSION, DEFAULT_BACKEND_STICKY_SESSION);
 
@@ -555,6 +560,8 @@ export class BackendManager implements BackendManagerShape {
       healthy: backend.healthy,
       lastCheckedAt: backend.lastCheck,
       failureCount: backend.failures,
+      latency: backend.latency,
+      lastError: backend.lastError,
     }));
   }
 
@@ -583,6 +590,7 @@ export class BackendManager implements BackendManagerShape {
           failures: 0,
           consecutiveFailures: 0,
           consecutiveSuccesses: 0,
+          latency: 0,
         };
 
         this.backendByUrl.set(key, backend);
@@ -606,6 +614,7 @@ export class BackendManager implements BackendManagerShape {
         failures: 0,
         consecutiveFailures: 0,
         consecutiveSuccesses: 0,
+        latency: 0,
       });
     }
 
@@ -632,6 +641,7 @@ export class BackendManager implements BackendManagerShape {
       healthy: true,
       lastCheck: Date.now(),
       failures: 0,
+      latency: 0,
     };
   }
 
@@ -764,6 +774,10 @@ export class BackendManager implements BackendManagerShape {
     void this.runHealthChecks();
   }
 
+  public async checkAll(): Promise<void> {
+    await this.runHealthChecks();
+  }
+
   private async runHealthChecks(): Promise<void> {
     if (this.healthCheckInFlight) {
       return;
@@ -782,13 +796,15 @@ export class BackendManager implements BackendManagerShape {
   }
 
   private async checkBackendHealth(backend: BackendRuntimeState): Promise<boolean> {
-    const checkUrl = new URL(HEALTH_CHECK_PATH, backend.url);
+    const checkUrl = new URL(this.healthCheckPath, backend.url);
     const controller = new AbortController();
     const timeout = setTimeout(() => {
       controller.abort();
     }, HEALTH_CHECK_TIMEOUT_MS);
 
+    const start = Date.now();
     let isHealthyResult = false;
+    let errorReason: string | undefined;
 
     try {
       const response = await fetch(checkUrl.toString(), {
@@ -802,21 +818,30 @@ export class BackendManager implements BackendManagerShape {
 
       isHealthyResult = response.status < 500;
       await response.body?.cancel();
-    } catch {
+    } catch (error) {
       isHealthyResult = false;
+      errorReason = error instanceof Error ? error.message : 'Unknown network error';
     } finally {
       clearTimeout(timeout);
     }
 
-    return this.applyHealthProbeResult(backend, isHealthyResult);
+    const latency = Date.now() - start;
+    return this.applyHealthProbeResult(backend, isHealthyResult, latency, errorReason);
   }
 
-  private applyHealthProbeResult(backend: BackendRuntimeState, isHealthyResult: boolean): boolean {
+  private applyHealthProbeResult(
+    backend: BackendRuntimeState,
+    isHealthyResult: boolean,
+    latency: number,
+    errorReason?: string,
+  ): boolean {
     backend.lastCheck = Date.now();
+    backend.latency = latency;
 
     if (isHealthyResult) {
       backend.consecutiveSuccesses += 1;
       backend.consecutiveFailures = 0;
+      delete backend.lastError;
 
       if (backend.healthy) {
         backend.failures = 0;
@@ -833,6 +858,7 @@ export class BackendManager implements BackendManagerShape {
       if (this.debugEnabled) {
         console.info('[backend] health check recovered backend', {
           backendUrl: backend.url.toString(),
+          latency,
         });
       }
 
@@ -842,6 +868,9 @@ export class BackendManager implements BackendManagerShape {
     backend.consecutiveFailures += 1;
     backend.consecutiveSuccesses = 0;
     backend.failures += 1;
+    if (errorReason) {
+      backend.lastError = errorReason;
+    }
 
     if (!backend.healthy || backend.consecutiveFailures < FAILURE_HYSTERESIS_COUNT) {
       return false;
@@ -853,6 +882,7 @@ export class BackendManager implements BackendManagerShape {
       console.warn('[backend] health check marked backend unhealthy', {
         backendUrl: backend.url.toString(),
         failures: backend.failures,
+        reason: errorReason,
       });
     }
 

@@ -1,4 +1,4 @@
-import { DEFAULT_TRANSPORT, HIDE_BACKEND_URLS, SUPPORTED_TRANSPORTS } from './config';
+import { DEFAULT_HEALTH_PATH, DEFAULT_TRANSPORT, HIDE_BACKEND_URLS, SUPPORTED_TRANSPORTS } from './config';
 import {
   BackendManager,
   isBackendFailureResponse,
@@ -386,16 +386,23 @@ function isLandingPageRequest(request: Request, pathname: string): boolean {
   return isDocument || accept.includes('text/html');
 }
 
-function isHealthEndpoint(request: Request, pathname: string): boolean {
-  return request.method.toUpperCase() === 'GET' && pathname === '/health';
+function isHealthEndpoint(request: Request, pathname: string, env: Env): boolean {
+  if (request.method.toUpperCase() !== 'GET') {
+    return false;
+  }
+
+  const healthPath = env.HEALTH_PATH?.trim() || DEFAULT_HEALTH_PATH;
+  return pathname === healthPath;
 }
 
 function isStatusEndpoint(request: Request, pathname: string): boolean {
   return request.method.toUpperCase() === 'GET' && pathname === '/status';
 }
 
-function buildHealthResponse(env: Env): Response {
-  const backendStates = getBackendManager(env).getStates();
+async function buildHealthResponse(env: Env): Promise<Response> {
+  const manager = getBackendManager(env);
+  await manager.checkAll();
+  const backendStates = manager.getStates();
   const totalBackends = backendStates.length;
   const healthyBackends = backendStates.filter((backend) => backend.healthy).length;
   const status = healthyBackends > 0 ? 'ok' : 'degraded';
@@ -564,8 +571,8 @@ export default {
     const requestUrl = new URL(request.url);
     const subscriptionConfig = getSubscriptionConfig(env);
 
-    if (isHealthEndpoint(request, requestUrl.pathname)) {
-      return buildHealthResponse(env);
+    if (isHealthEndpoint(request, requestUrl.pathname, env)) {
+      return await buildHealthResponse(env);
     }
 
     if (isStatusEndpoint(request, requestUrl.pathname)) {
