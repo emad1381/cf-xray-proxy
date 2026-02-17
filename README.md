@@ -2,6 +2,8 @@
 
 **High-Performance Cloudflare Worker Proxy for VLESS / VMESS / Trojan**
 
+[برای توضیحات فارسی کلیک کنید](README_FA.md)
+
 This project is a highly optimized, robust, and feature-rich Cloudflare Worker script designed to proxy traffic for Xray-core protocols (VLESS, VMESS, Trojan) over WebSocket/HTTPUpgrade transports. It acts as a smart load balancer and failover manager for your backend servers.
 
 ## 🚀 Key Features
