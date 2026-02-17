@@ -1,130 +1,101 @@
-<p align="center">
-  <img src="https://cdn.simpleicons.org/cloudflare/F38020?viewbox=auto&size=68" alt="Cloudflare logo" height="68" />
-  <span>&nbsp;+&nbsp;</span>
-  <img src="https://camo.githubusercontent.com/ede9710f2920f243f0e56cb036684fff6fef9c0a174ea5bb92109e5ef72c3812/68747470733a2f2f726177322e736561646e2e696f2f657468657265756d2f3078356565333632383636303031363133303933333631656238353639643539633431343162373664312f3766613963653930306662333962343432323633343864623333306533322f38623766613963653930306662333962343432323633343864623333306533322e737667" alt="Xray logo" height="68" />
-</p>
+# ⚡ CF Xray Proxy (Enhanced)
 
-<p align="center">
-  <a href="https://workers.cloudflare.com/">
-    <img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white" alt="Cloudflare Workers" />
-  </a>
-  <a href="https://www.typescriptlang.org/">
-    <img src="https://img.shields.io/badge/TypeScript-Strict-3178C6?logo=typescript&logoColor=white" alt="TypeScript Strict" />
-  </a>
-  <a href="/.github/workflows/deploy.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/YrustPd/cf-xray-proxy/deploy.yml?branch=main&label=deploy" alt="Deploy" />
-  </a>
-  <a href="/LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License" />
-  </a>
-</p>
+**High-Performance Cloudflare Worker Proxy for VLESS / VMESS / Trojan**
 
-# cf-xray-proxy
+This project is a highly optimized, robust, and feature-rich Cloudflare Worker script designed to proxy traffic for Xray-core protocols (VLESS, VMESS, Trojan) over WebSocket/HTTPUpgrade transports. It acts as a smart load balancer and failover manager for your backend servers.
 
-Cloudflare Worker reverse-proxy frontend for VLESS, VMess, and Trojan traffic, forwarding `ws`, `xhttp`, and `httpupgrade` requests to an Xray or sing-box backend.
+## 🚀 Key Features
 
-## What this project is
+*   **Smart Load Balancing:** Supports **Expected Weighted Round-Robin** and **Sticky Sessions** for distributing traffic among multiple backend servers.
+*   **High Availability & Failover:** Automatically detects unhealthy backends and routes traffic to healthy ones.
+*   **Real-Time Health Checks:** Built-in mechanism to actively ping backends and measure latency.
+*   **Protocol Support:** Full support for **VLESS**, **VMESS**, and **Trojan** protocols over WebSocket (ws), HTTPUpgrade, and xhttp transports.
+*   **Secure & Stealthy:** Configurable health check paths and the ability to hide backend URLs from public view.
+*   **Rate Limiting:** Protect your backends with connection-based rate limiting per IP.
+*   **Zero-Dependency Build:** Bundled into a single, efficient `worker.js` file using `esbuild`.
 
-This repository provides a Worker entrypoint (`src/index.ts`) plus transport handlers (`src/transports/*`) that:
+---
 
-- accept inbound HTTP/Upgrade requests at Cloudflare edge,
-- select a transport handler (`ws`, `xhttp`, or `httpupgrade`),
-- forward path/query to backend as-is,
-- bridge upgraded sockets between client and backend.
+## 🛠️ Configuration (Environment Variables)
 
-The backend remains the protocol/authentication authority.
+Customize the worker's behavior by setting these **Environment Variables** in your Cloudflare Worker settings.
 
-## Why you would use it
+| Variable Name | Required | Default | Description |
+| :--- | :---: | :---: | :--- |
+| **`BACKEND_LIST`** | ✅ | - | **Main Configuration.** A comma-separated list of backend servers. <br>Format: `url` or `url|weight`. <br>Example: `https://s1.example.com, https://s2.example.com|5` |
+| **`BACKEND_URL`** | ❌ | - | *Fallback.* Single backend URL if `BACKEND_LIST` is not provided. <br>Example: `https://my-vless-server.com` |
+| **`HEALTH_PATH`** | ❌ | `/health` | **Security.** The path used to view server health and status. <br>Example: `/secret-status-page` |
+| **`HIDE_BACKEND_URLS`** | ❌ | `true` | **Privacy.** If `true`, hides backend URLs in the `/health` output. Set to `false` to debug latency/connectivity. |
+| **`BACKEND_HEALTH_CHECK_INTERVAL`** | ❌ | `30000` | How often (in ms) to check backend health (Active Probing). Default is 30 seconds. |
+| **`MAX_RETRIES`** | ❌ | `3` | Number of times to retry a connection before giving up. |
+| **`BACKEND_STICKY_SESSION`** | ❌ | `false` | If `true`, tries to keep a client connected to the same backend (useful for some banking/gaming apps). |
+| **`DEBUG`** | ❌ | `false` | Enable verbose logging in Cloudflare Dashboard (Real-time Logs). |
+| **`RATE_LIMIT_ENABLED`** | ❌ | `false` | Enable connection rate limiting per IP. |
+| **`RATE_LIMIT_MAX_CONN_PER_IP`** | ❌ | `5` | Max concurrent connections allowed per client IP. |
 
-- Put Cloudflare edge in front of an existing Xray/sing-box backend.
-- Terminate TLS at the edge while keeping origin/backend on plain HTTP.
-- Select transports per request via query/header/path without redeploying.
-- Keep Worker logic thin and backend-focused for VLESS/VMess/Trojan validation and policy.
+---
 
-## Features
+## 📡 API Endpoints
 
-- Multi-backend support with weighted selection and automatic failover.
-- Periodic backend health checking with auto-recovery.
-- Exponential backoff retry with jitter for backend retries.
-- Connection-based rate limiting (per-IP concurrent and per-minute attempts).
-- UUID-based maximum active connection limiting.
-- Optional subscription proxy (`/sub/...`) with in-memory caching (disabled by default).
-- Built-in observability endpoints: `GET /health` and `GET /status` (when `DEBUG=true`).
-- `GET /health` hides backend URLs/addresses by default via `HIDE_BACKEND_URLS=true`.
+### Health Check
+Endpoint: **`YOUR_WORKER_URL/<HEALTH_PATH>`** (Default: `/health`)
 
-## Architecture
+Returns the current status of all backend servers.
 
-```mermaid
-flowchart LR
-  Client["Client (VLESS / VMess / Trojan)"] -->|HTTPS / TLS| Worker["Cloudflare Worker (this repo)"]
-  Worker --> Router["Router / transport selection"]
-  Worker --> BackendManager["BackendManager (weights, health checks, failover)"]
-  Worker --> RateLimiter["RateLimiter (connection-based, per IP)"]
-  Worker --> UUIDManager["UUIDManager (per-UUID active connection cap)"]
-  Worker --> SubscriptionProxy["SubscriptionProxy (optional /sub routes)"]
-  Worker -->|"HTTP or HTTPS\n(BACKEND_URL / BACKEND_LIST)"| BackendPool["Backend pool (Xray / sing-box)"]
-  BackendPool --> BackendNodes["backend-1 / backend-2 / backend-N"]
-  BackendPool --> BackendFunctions["authentication / protocol validation / routing"]
+**Example Response (when `HIDE_BACKEND_URLS=false`):**
+```json
+{
+  "status": "ok",
+  "timestamp": 1723456789000,
+  "totalBackends": 2,
+  "healthyBackends": 2,
+  "backends": [
+    {
+      "url": "https://server1.example.com",
+      "healthy": true,
+      "latency": 45,
+      "failureCount": 0
+    },
+    {
+      "url": "https://server2.example.com",
+      "healthy": true,
+      "latency": 52,
+      "failureCount": 0
+    }
+  ]
+}
 ```
 
-> TLS terminates at Cloudflare Worker edge. `BACKEND_URL` and each `BACKEND_LIST` entry can be `http://...` or `https://...`.
+### Landing Page
+By default, visiting the root `/` path redirects to `https://www.aparat.com` for stealth.
 
-## Supported transports
+---
 
-| Transport | Handler file | Upgrade detection | Notes |
-| --- | --- | --- | --- |
-| `ws` | `src/transports/ws.ts` | `Connection: upgrade` + `Upgrade: websocket` | WebSocket upgrade + passthrough fallback |
-| `xhttp` | `src/transports/xhttp.ts` | `Connection: upgrade` + `Upgrade: websocket` | Supports `mode` (`auto`/`packet-up`) and `ed` hint |
-| `httpupgrade` | `src/transports/httpupgrade.ts` | `Connection: upgrade` + any `Upgrade` value | HTTP Upgrade semantics with shared WS bridging |
+## 📦 Deployment
 
-### Transport selection order
+### Method 1: Manual Copy-Paste (Easiest)
+1.  **Build:** Ensure you have the `worker.js` file (provided in this repo releases or built manually).
+2.  **Cloudflare:** Go to your Worker -> **Quick Edit**.
+3.  **Paste:** Copy the entire content of `worker.js` and paste it into the editor.
+4.  **Save & Deploy.**
+5.  **Configure:** Go to **Settings -> Variables** and add the required variables (at least `BACKEND_LIST`).
 
-Selection logic is implemented in `src/index.ts`:
+### Method 2: Using Wrangler (Developer)
+1.  Install dependencies: `npm install`
+2.  Build the worker: `npm run build` (This generates `worker.js`)
+3.  Deploy: `npx wrangler deploy`
 
-1. Query parameter `transport` (`xhttp`, `httpupgrade`, `ws`)
-2. Header `x-transport-type`
-3. Path prefix (`/xhttp/...`, `/httpupgrade/...`, `/ws/...`)
-4. Environment/default transport (`TRANSPORT`, otherwise default `xhttp`)
+---
 
-### ☕ Support this project
+## 🧩 Protocols & Transports
 
-If you find this project useful, consider supporting its development:
+This worker handles the following transport upgrades transparently:
+*   `Upgrade: websocket`
+*   `Upgrade: xhttp`
+*   `Upgrade: httpupgrade`
 
-<p align="center">
-  <a href="https://link.trustwallet.com/send?coin=195&address=TUWcBfKhmpLQBC961oCJf7zuXTN2ezMbkF&token_id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t">
-    <img src="https://img.shields.io/badge/USDT%20(TRC20)-26A17B?style=for-the-badge&logo=tether&logoColor=white" alt="USDT TRC20" />
-  </a>
-  <a href="https://app.tonkeeper.com/transfer/UQC_4BlT2iUlliYUDDCzkDBhBPrww3plMH3XqWaWeDRXfWVj">
-    <img src="https://img.shields.io/badge/TON-0098EA?style=for-the-badge&logo=ton&logoColor=white" alt="TON" />
-  </a>
-</p>
+Make sure your **Client** (V2RayNG, etc.) matches the **Server** (Backend) transport settings (usually `ws` or `httpupgrade`). The path (e.g., `/vless-ws`) in your client must match the path configured on your backend server.
 
-<p align="center">
-  <strong>USDT (TRC-20):</strong> <code>TUWcBfKhmpLQBC961oCJf7zuXTN2ezMbkF</code><br/>
-  <strong>TON:</strong> <code>UQC_4BlT2iUlliYUDDCzkDBhBPrww3plMH3XqWaWeDRXfWVj</code>
-</p>
+---
 
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [Configuration](docs/configuration.md)
-- [Multi-backend setup](docs/multi-backend-setup.md)
-- [Rate limiting](docs/rate-limiting.md)
-- [Subscription proxy](docs/subscription-proxy.md)
-- [Quickstart](docs/quickstart.md)
-- [Deployment guide](docs/deployment-guide.md)
-
-## Routing behavior
-
-- Path and query are forwarded exactly from inbound request to backend URL.
-- Worker does not inject fixed paths.
-- Worker strips transport prefix only when that same prefix selected routing:
-  - `/ws/<path>` -> `/<path>`
-  - `/xhttp/<path>` -> `/<path>`
-  - `/httpupgrade/<path>` -> `/<path>`
-- Worker-only routing selectors are removed before backend forward:
-  - query `transport`
-  - header `x-transport-type`
-- Worker does not validate UUID, port, or path.
-
-> Authentication, UUID checks, and policy enforcement belong on backend Xray/sing-box.
+**Disclaimer:** This project is for educational and research purposes only. Use responsibly.
