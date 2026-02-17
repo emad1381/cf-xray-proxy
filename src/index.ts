@@ -587,7 +587,7 @@ export default {
     }
 
     if (isLandingPageRequest(request, requestUrl.pathname)) {
-      return renderLandingPage();
+      return Response.redirect('https://www.aparat.com', 302);
     }
 
     const { transport: pathTransport, forwardedPath } = parsePathTransport(requestUrl.pathname);
@@ -663,22 +663,22 @@ export default {
     const onConnectionReady =
       shouldLimitUuid && extractedUuid && uuidManager
         ? (disconnect: ConnectionDisconnectFn): void => {
-            if (unregisterUuidConnection) {
+          if (unregisterUuidConnection) {
+            return;
+          }
+
+          uuidManager.registerConnection(extractedUuid, clientIp, connectionId, disconnect);
+
+          let released = false;
+          unregisterUuidConnection = (): void => {
+            if (released) {
               return;
             }
 
-            uuidManager.registerConnection(extractedUuid, clientIp, connectionId, disconnect);
-
-            let released = false;
-            unregisterUuidConnection = (): void => {
-              if (released) {
-                return;
-              }
-
-              released = true;
-              uuidManager.unregisterConnection(extractedUuid, connectionId);
-            };
-          }
+            released = true;
+            uuidManager.unregisterConnection(extractedUuid, connectionId);
+          };
+        }
         : undefined;
 
     try {
