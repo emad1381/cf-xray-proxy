@@ -3367,9 +3367,16 @@ var index_default = {
       forwardedPath,
       requestUrl.pathname
     );
+    const isSystemPath = isHealthEndpoint(request, requestUrl.pathname, env) || isStatusEndpoint(request, requestUrl.pathname) || isLandingPageRequest(request, requestUrl.pathname) || subscriptionConfig.enabled && !!subscriptionRoute || subscriptionConfig.enabled && isRootPath;
+    const isTransportPath = pathTransport !== null;
+    const isUpgrade = isUpgradeRequest(request);
+    const hasTransportHeader = request.headers.has("x-transport-type");
+    const hasTransportQuery = requestUrl.searchParams.has("transport");
+    if (!isSystemPath && !isTransportPath && !isUpgrade && !hasTransportHeader && !hasTransportQuery) {
+      return textResponse4(404, "Not Found");
+    }
     const forwardedRequest = stripRoutingSelectors(transportRoutedRequest);
     const handler = HANDLERS[transport];
-    const isUpgrade = isUpgradeRequest(forwardedRequest);
     const clientIp = isUpgrade ? resolveClientIp(forwardedRequest) : "unknown";
     const connectionId = isUpgrade ? createConnectionId() : "";
     const rateLimitConfig = getRateLimitConfig(env);
